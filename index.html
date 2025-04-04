@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CTN - 聊天室</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            --primary: #2563eb;
+            --secondary: #3b82f6;
+            --background: #f8fafc;
+            --text: #1e293b;
+            --error: #dc2626;
+            --success: #16a34a;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Segoe UI', system-ui, sans-serif;
+        }
+
+        body {
+            background: var(--background);
+            color: var(--text);
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        /* 认证界面 */
+        .auth-section {
+            display: grid;
+            gap: 2rem;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+        }
+
+        .auth-card {
+            background: white;
+            border-radius: 1rem;
+            padding: 2rem;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+            transition: transform 0.2s;
+        }
+
+        .chat-interface {
+            display: none;
+            height: calc(100vh - 4rem);
+            grid-template-rows: auto 1fr auto;
+            gap: 1rem;
+        }
+
+        /* 完整样式参考前文，此处省略重复样式 */
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- 认证界面 -->
+        <div id="auth-interface" class="auth-section">
+            <!-- 注册和登录卡片结构参考前文 -->
+        </div>
+
+        <!-- 聊天主界面 -->
+        <div id="chat-interface" class="chat-interface">
+            <div class="chat-header">
+                <img id="current-avatar" class="user-avatar" 
+                     src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=">
+                <div>
+                    <h2 id="current-username"></h2>
+                    <small id="online-status">连接中...</small>
+                </div>
+                <button onclick="handleLogout()" class="btn btn-primary">
+                    <i class="fas fa-sign-out-alt"></i> 退出
+                </button>
+            </div>
+
+            <div class="message-container" id="message-container"></div>
+
+            <div class="input-area">
+                <select id="message-type" class="btn" onchange="togglePrivate()">
+                    <option value="public"><i class="fas fa-globe"></i> 公共</option>
+                    <option value="private"><i class="fas fa-lock"></i> 私聊</option>
+                </select>
+                <select id="target-user" class="btn" disabled>
+                    <option value="">选择用户</option>
+                </select>
+                <input type="text" id="message-input" class="message-input" 
+                       placeholder="输入消息..." maxlength="200">
+                <button onclick="sendMessage()" class="btn btn-primary" id="send-btn">
+                    <i class="fas fa-paper-plane"></i> 发送
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 服务端配置
+        const API_BASE = 'https://chat-api.ctn32.dpdns.org';
+        const ENDPOINTS = {
+            REGISTER: '/api/register',
+            LOGIN: '/api/login',
+            SEND: '/api/send',
+            MESSAGES: '/api/messages',
+            ONLINE: '/api/online',
+            AVATAR: '/avatar/'
+        };
+        const WS_ENDPOINT = 'wss://chat-api.ctn32.dpdns.org/ws';
+
+        // 全局状态
+        let currentUser = null;
+        let socket = null;
+        let reconnectTimer = null;
+
+        // DOM元素
+        const authInterface = document.getElementById('auth-interface');
+        const chatInterface = document.getElementById('chat-interface');
+        const messageContainer = document.getElementById('message-container');
+
+        // 初始化WebSocket连接
+        function connectWebSocket() {
+            if (socket) socket.close();
+
+            socket = new WebSocket(WS_ENDPOINT);
+            
+            socket.onopen = () => {
+                updateOnlineStatus('已连接');
+                authenticateSocket();
+                loadMessageHistory();
+                startHeartbeat();
+            };
+
+            socket.onmessage = (event) => {
+                const message = JSON.parse(event.data);
+                handleServerMessage(message);
+            };
+
+            socket.onclose = () => {
+                updateOnlineStatus('连接断开，正在重连...');
+                clearInterval(heartbeatInterval);
+                reconnectTimer = setTimeout(connectWebSocket, 5000);
+            };
+        }
+
+        // 认证WebSocket连接
+        function authenticateSocket() {
+            const token = localStorage.getItem('chat-token');
+            if (token) {
+                socket.send(JSON.stringify({
+                    type: 'auth',
+                    token: token
+                }));
+            }
+        }
+
+        // 消息处理
+        function handleServerMessage(message) {
+            switch(message.type) {
+                case 'new_message':
+                    appendMessage(message.data);
+                    break;
+                case 'user_list':
+                    updateUserList(message.data);
+                    break;
+                case 'error':
+                    showError(message.message);
+                    break;
+            }
+        }
+
+        // 用户注册
+        async function handleRegister() {
+            const username = document.getElementById('reg-username').value.trim();
+            const password = document.getElementById('reg-password').value;
+            const qq = document.getElementById('reg-qq').value.trim();
+
+            try {
+                const response = await fetch(API_BASE + ENDPOINTS.REGISTER, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password, qq })
+                });
+
+                const data = await response.json();
+                if (data.error) throw data.error;
+                
+                showSuccess('注册成功');
+                handleLoginSuccess(data);
+            } catch (error) {
+                showError(typeof error === 'string' ? error : '注册失败');
+            }
+        }
+
+        // 用户登录
+        async function handleLogin() {
+            const username = document.getElementById('login-username').value.trim();
+            const password = document.getElementById('login-password').value;
+
+            try {
+                const response = await fetch(API_BASE + ENDPOINTS.LOGIN, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+
+                const data = await response.json();
+                if (data.error) throw data.error;
+                
+                handleLoginSuccess(data);
+            } catch (error) {
+                showError('登录失败：' + (error.message || '凭证错误'));
+            }
+        }
+
+        // 登录成功处理
+        function handleLoginSuccess(data) {
+            currentUser = data.user;
+            localStorage.setItem('chat-token', data.token);
+            
+            // 更新界面
+            authInterface.style.display = 'none';
+            chatInterface.style.display = 'grid';
+            document.getElementById('current-username').textContent = currentUser.username;
+            document.getElementById('current-avatar').src = API_BASE + ENDPOINTS.AVATAR + currentUser.qq;
+
+            // 初始化实时连接
+            connectWebSocket();
+            loadOnlineUsers();
+        }
+
+        // 发送消息
+        async function sendMessage() {
+            const input = document.getElementById('message-input');
+            const message = {
+                content: input.value.trim(),
+                type: document.getElementById('message-type').value,
+                target: document.getElementById('target-user').value || null
+            };
+
+            if (!message.content) return;
+
+            try {
+                const response = await fetch(API_BASE + ENDPOINTS.SEND, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('chat-token')}`
+                    },
+                    body: JSON.stringify(message)
+                });
+
+                if (!response.ok) throw new Error('发送失败');
+                input.value = '';
+            } catch (error) {
+                showError('消息发送失败');
+            }
+        }
+
+        // 初始化
+        function init() {
+            checkExistingSession();
+            initEventListeners();
+        }
+
+        // 启动应用
+        init();
+    </script>
+</body>
+</html>
