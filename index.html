@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>CTN聊天室</title>
+    <style>
+        :root {
+            --primary: #2196F3;
+            --error: #f44336;
+            --background: #f5f5f5;
+        }
+
+        body {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            font-family: 'Segoe UI', sans-serif;
+            background-color: var(--background);
+        }
+
+        .auth-box {
+            background: white;
+            border-radius: 10px;
+            padding: 25px;
+            margin: 20px 0;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+
+        .password-strength {
+            height: 4px;
+            background: #eee;
+            margin: 10px 0;
+            border-radius: 2px;
+        }
+
+        .strength-bar {
+            height: 100%;
+            width: 0%;
+            transition: width 0.3s ease;
+            border-radius: 2px;
+        }
+
+        .criteria {
+            display: flex;
+            gap: 15px;
+            margin: 10px 0;
+            font-size: 0.9em;
+        }
+
+        .criteria span {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .valid { color: #4CAF50 !important; }
+        .invalid { color: var(--error) !important; }
+
+        #chat { display: none; }
+        .message {
+            display: flex;
+            gap: 15px;
+            padding: 15px;
+            margin: 10px 0;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+        }
+        .private {
+            border-left: 3px solid var(--primary);
+            background: #e3f2fd;
+        }
+        .avatar {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            object-fit: cover;
+        }
+        .timestamp {
+            color: #666;
+            font-size: 0.8em;
+        }
+    </style>
+</head>
+<body>
+    <!-- 认证界面 -->
+    <div id="auth">
+        <div class="auth-box">
+            <h2>注册新账号</h2>
+            <div class="form-group">
+                <input type="text" id="regUser" placeholder="用户名" 
+                       pattern="[a-zA-Z0-9_-]{3,20}" required>
+                <div class="criteria">
+                    <span class="invalid">允许字母、数字、_、-，3-20位</span>
+                </div>
+            </div>
+            
+            <div class="form-group">
+                <input type="password" id="regPwd" placeholder="密码" required
+                       oninput="updatePasswordStrength(this.value)">
+                <div class="password-strength">
+                    <div class="strength-bar" id="strengthBar"></div>
+                </div>
+                <div class="criteria" id="passwordCriteria">
+                    <span id="length" class="invalid">≥8位</span>
+                    <span id="uppercase" class="invalid">大写字母</span>
+                    <span id="lowercase" class="invalid">小写字母</span>
+                    <span id="number" class="invalid">数字</span>
+                    <span id="special" class="invalid">特殊符号</span>
+                </div>
+            </div>
+            
+            <div class="form-group">
+                <input type="text" id="regQQ" placeholder="QQ号" 
+                       pattern="[1-9]\d{4,11}" required>
+                <div class="criteria">
+                    <span class="invalid">5-12位数字，不以0开头</span>
+                </div>
+            </div>
+            
+            <button onclick="register()" id="regBtn" class="primary-btn" disabled>注册</button>
+        </div>
+
+        <div class="auth-box">
+            <h2>用户登录</h2>
+            <input type="text" id="loginUser" placeholder="用户名" required>
+            <input type="password" id="loginPwd" placeholder="密码" required>
+            <button onclick="login()" class="primary-btn">登录</button>
+        </div>
+    </div>
+
+    <!-- 聊天界面 -->
+    <div id="chat">
+        <div class="header">
+            <img id="userAvatar" class="avatar">
+            <div>
+                <h2 id="currentUser"></h2>
+                <button onclick="logout()" class="logout-btn">退出登录</button>
+            </div>
+        </div>
+        
+        <div id="messageContainer"></div>
+        
+        <div class="input-area">
+            <select id="msgType" onchange="togglePrivate()">
+                <option value="public">公共消息</option>
+                <option value="private">私聊消息</option>
+            </select>
+            <select id="targetUser" disabled></select>
+            <input type="text" id="messageInput" placeholder="输入消息..." maxlength="200">
+            <button onclick="sendMessage()" class="send-btn">发送</button>
+        </div>
+    </div>
+
+    <script>
+        const WORKER_URL = 'https://chat-api.ctn32.dpdns.org';
+        let currentUser = null;
+        let eventSource = null;
+
+        // ------------ 密码强度检测 ------------
+        function updatePasswordStrength(pwd) {
+            const checks = {
+                length: pwd.length >= 8,
+                uppercase: /[A-Z]/.test(pwd),
+                lowercase: /[a-z]/.test(pwd),
+                number: /\d/.test(pwd),
+                special: /[!@#$%^&*]/.test(pwd)
+            };
+
+            // 更新提示状态
+            Object.entries(checks).forEach(([id, valid]) => {
+                document.getElementById(id).className = valid ? 'valid' : 'invalid';
+            });
+
+            // 更新强度条
+            const validCount = Object.values(checks).filter(v => v).length;
+            const strengthBar = document.getElementById('strengthBar');
+            strengthBar.style.width = `${(validCount/5)*100}%`;
+            strengthBar.style.backgroundColor = [
+                '#ff4444', '#ffbb33', '#ffbb33', '#00C851', '#00C851'
+            ][validCount-1];
+
+            // 控制按钮状态
+            document.getElementById('regBtn').disabled = !Object.values(checks).every(v => v);
+        }
+
+        // ------------ 用户注册 ------------
+        async function register() {
+            const user = document.getElementById('regUser').value.trim();
+            const pwd = document.getElementById('regPwd').value;
+            const qq = document.getElementById('regQQ').value.trim();
+
+            try {
+                const res = await fetch(`${WORKER_URL}/register`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username: user, password: pwd, qq })
+                });
+                
+                const data = await res.json();
+                if (data.success) {
+                    alert('注册成功，请登录！');
+                    document.getElementById('loginUser').value = user;
+                } else {
+                    alert('错误: ' + (data.error || '注册失败'));
+                }
+            } catch (err) {
+                alert('网络错误，请重试');
+            }
+        }
+
+        // ------------ 实时消息监听 ------------
+        function setupSSE() {
+            eventSource = new EventSource(`${WORKER_URL}/events`);
+            
+            eventSource.onmessage = async (e) => {
+                if (e.data === ':ping') return;
+                
+                const messages = JSON.parse(e.data);
+                const container = document.getElementById('messageContainer');
+                
+                messages.forEach(msg => {
+                    const html = `
+                        <div class="message ${msg.isPrivate ? 'private' : ''}">
+                            <img src="${msg.avatar}" class="avatar">
+                            <div>
+                                <b>${msg.from}</b>
+                                ${msg.to ? `<small>→ ${msg.to}</small>` : ''}
+                                <p>${msg.message}</p>
+                                <span class="timestamp">
+                                    ${new Date(msg.timestamp).toLocaleString()}
+                                </span>
+                            </div>
+                        </div>
+                    `;
+                    container.innerHTML += html;
+                });
+            };
+        }
+
+        // ------------ 初始化 ------------
+        async function login() {
+            const user = document.getElementById('loginUser').value.trim();
+            const pwd = document.getElementById('loginPwd').value;
+
+            try {
+                const res = await fetch(`${WORKER_URL}/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username: user, password: pwd })
+                });
+                
+                const data = await res.json();
+                if (data.success) {
+                    currentUser = user;
+                    document.getElementById('auth').style.display = 'none';
+                    document.getElementById('chat').style.display = 'block';
+                    document.getElementById('currentUser').textContent = user;
+                    document.getElementById('userAvatar').src = data.avatar;
+                    setupSSE();
+                    loadOnlineUsers();
+                } else {
+                    alert('错误: ' + (data.error || '登录失败'));
+                }
+            } catch (err) {
+                alert('网络错误，请重试');
+            }
+        }
+
+        // ------------ 更多功能实现 ------------
+        // ...（消息发送、在线用户加载、私聊切换等功能实现）
+    </script>
+</body>
+</html>
